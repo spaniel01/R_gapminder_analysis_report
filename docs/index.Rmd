@@ -1,0 +1,571 @@
+---
+title: "Gapminder data analysis"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, fig.height=3, fig.width=4, fig.align = 'center')
+
+#make graphics text times new roman, increase TABLE heading size
+#Packages
+library(tidyverse)
+library(gapminder)
+library(pastecs)
+library(lubridate)
+library(data.table)
+library(ggrepel) 
+library(purrr)
+library(knitr)
+library(extrafont)
+library(kableExtra)
+library(egg)
+library(gridExtra)
+library(lemon)
+
+#Functions
+outlierCore <- function(iVar){
+  iqr = stats::IQR(iVar)
+  lower = quantile(iVar, 1/4, names = FALSE) - 1.5 * iqr
+  upper = quantile(iVar, 3/4, names = FALSE) + 1.5 * iqr
+  outlier = iVar < lower | iVar > upper
+  return(list(iqr, lower, upper, outlier))}
+
+outlierFunc <- function(obj){
+  if(is.numeric(obj)){
+    iVar = obj
+    listOut= outlierCore(iVar)
+    print(setNames(unlist(listOut[1:3]), c("iqr", "lower", "upper")))
+    return(listOut[[4]])
+  }else if(is.data.frame(obj) & sum(apply(obj, 2, is.numeric)) == ncol(obj)){
+    df = obj
+    listStatsCollection = list()
+    for(i in names(df)){
+      iVar = df[[i]]
+      listOut = outlierCore(iVar)
+      listStatsCollection = c(listStatsCollection, listOut[1:3])
+      df[paste0("outlier_", i)] = listOut[[4]]}
+    dfStats = as.data.frame(matrix(unlist(listStatsCollection), nrow = 3, ))
+    rownames(dfStats) = c("iqr", "lower", "upper")
+    colnames(dfStats) = names(obj)
+    print(dfStats)  
+    return(df)
+  }else{
+    print("Error: input must be either numeric vector or data.frame consisting only of numeric vectors.")        
+  }
+}
+
+### Data
+gapminder <- as_tibble(gapminder)
+
+### Checking data validity
+#Check country spelling: dataset was reported to contain 142 countries. 142 unique values suggest uniform spelling
+gapminder%>% summarise(unique(country)) %>% summarise(n())
+
+#Check that all countries have the same number of observations: each is included 12 times
+gapminder%>%group_by(country)%>%summarise(nObsEachCountry = n()) %>% summarise(uniqueNOfEachCountry=unique(nObsEachCountry))
+
+#Check all years are the same for each country. Each country's year values are exactly identical to seq(152, 2007, 5)
+print(gapminder%>%group_by(country)%>% arrange(year) %>% summarise(identTF = base::identical(year, as.integer(seq(1952, 2007, 5)))) %>% ungroup()%>% summarise(n(), sum(identTF)))
+```
+
+# Introduction
+This project aims to explore the gapminder dataset^[The dataset forms part of the gapminder package. See https://www.rdocumentation.org/packages/gapminder/versions/0.3.0 for more information.], which includes the year, continent, country, life expectancy, population and GDP per capita variables. In addition to exploring the dataset and its variables and relationships, an attempt will be made to answer two questions. 
+
+1. Which continents and countries are in greatest need of humanitarian aid?
+
+2. Can a more sophisticated method for selecting recipient countries, other than simply providing aid to the countries with lowest life expectancy, be developed from the dataset?
+
+The following section will briefly elaborate especially on the motive for the second question and discuss the suitability of the gapminder variables to answering the above questions. Thereafter follows a section analyzing the individual variables, followed by a section exploring their relationships and a section which aims to answer the above questions^[The RMD file shows the code used to check the consistency and validity of the data.].  
+
+# Alternative criteria for selecting aid recipient countries and data limitations
+While the first question is rather straight forward, the second question requires some justification. While it is ethically commendable to first help those most in need, suggesting that countries with the lowest life expectancy receive humanitarian aid, additional criteria for determining aid recipient countries could also be taken into consideration. For instance, when GDP per capita increases, one would expect that a state's income increases as well due to greater tax earnings and that a part of this income is directed towards improving the welfare of its population. Where this is not the case, governments may not be responsive to their populations' needs and humanitarian aid may thus not produce the desired effect of improving the plight of a given population. Similarly, it is possible that a country is currently experiencing economic growth and improvements in life expectancy, in which case aid may be directed at countries where the economy is faltering, in order to avoid declines in life expectancy. A closer look at the data is thus required in order to evaluate whether alternative criteria for selecting countries in need of aid can be developed, based on the gapminder data.
+
+Concerning the key gapminder variables, life expectancy is likely to be affected most drastically by the availability, accessibility and quality of food, drinking water and public health services. As such, life expectancy may be considered an ideal indicator to determine which countries require humanitarian aid. Life expectancy may, additionally, also be influenced by by other factors, such as violence, whether criminal, intra- or interstate. Moreover, due to the relative ease and common practice of recording a person's age at the moment of death, life expectancy is more readily available and reliable than other variables. 
+
+GDP per capita, roughly speaking a country's economic power divided by its population, will be used in an effort to develop an alternative method for selecting aid recipient countries. As was mentioned above, one may, for example, wish to exclude countries where GDP per capita is rising and life expectancy falling. Similarly, one may wish to support countries where GDP per capita is falling, provided there is a strong positive relationship between GDP per capita and life expectancy, since this would imply life expectancy decreases in the more or less imminent future. 
+
+Population, the third variable, is rather secondary, given that GDP is already measured per capita. Its distribution and relationship with other variables will nonetheless be considered below, in order to avoid potentially drawing wrong conclusions. 
+
+In addition to the clearly very limited number of independent variables, another problem is that the data is measured at five year intervals only. This means that information between the different points in time are lost and that the impression given by the data may not reflect reality^[For example, a positive difference in life expectancy between two temporally adjacent observations of the same country may suggest a continuous increase, but there may have been a slump between the two points in time as well.]. As mentioned before, it is assumed that the gapminder dataset is the only available data source for this assignment.
+
+# Exploring the variables
+In order to answer the above questions, it makes sense to look at the evolution of variables across time and to reduce the period under investigation to the last one or two decades of the available data. Before doing so, however, the first subsection below will discuss the distributions of the gapminder variables. The second subsection will look at the evolution of these variables across time. 
+
+## Variables irrespective of time
+The years under observation range from `r min(gapminder$year)` to `r max(gapminder$year)` and are measured in five year intervals. As can be seen from the graphic below, Africa has by far the most countries included in the dataset, 52 (36.6 percent), while Asia, Europe and the Americas have a similar number of countries (ranging from 25 to 33, or 17.6 to 23.2 percent) and Oceania has by far the smallest number of countries (two, or 1.4 percent).  
+
+```{r overviewCountries, echo=FALSE}
+contCountry <- unique(gapminder[c("continent", "country")]) %>% 
+  count(continent, sort=TRUE) %>% 
+  mutate(Percentage = round(n/sum(n)*100, 1))
+
+contCountry %>% mutate(continent = fct_reorder(continent, Percentage, .desc=TRUE)) %>% 
+  ggplot(aes(continent, Percentage)) + 
+  geom_col() + 
+  geom_text(aes(continent, Percentage + 2, label = n, fill = NULL)) +
+  labs(title = "Percentage and number of countries by\ncontinent", 
+       x = "Continents", 
+       y = "Share of countries (percent)")
+```
+
+
+Given the time span and cross-country scope of the data, the variables reflect a large spread, as shown in the table below. The range in population is 1.3 billion, the range in GDP per capita is 113 thousand and the range in life expectancy is 59 years.
+```{r basic_var_stats}
+### Var basic stats
+gapminder %>% 
+  select(lifeExp, pop, gdpPercap) %>% 
+  pivot_longer(cols = everything(), 
+               names_to="vars", 
+               values_to="values") %>% 
+  group_by(vars)%>% 
+  summarize(min = min(values),
+            median = median(values),
+            max = max(values),
+            range = max-min,
+            median = median(values),
+            mean = mean(values),
+            sd = sd(values)) %>%
+  pivot_longer(cols = -vars, 
+               names_to = "statistics")%>%
+  pivot_wider(names_from = vars, 
+              values_from = value)%>%
+  select(1,4,2,3) %>% 
+  mutate_if(is.numeric, round, 1) %>% 
+  kable(caption = "Basic variable distribution statistics") %>%
+  kable_styling(position = "center")
+
+```
+
+This is also reflected in the three boxplots below. As may be expected, the difference in life expectancy has no outliers (smaller range, large interquartile range), while GDP per capita and population each have a fairly large number of positive outliers. There are no negative outliers.
+
+
+```{r boxplots, fig.width = 6}
+gapminder %>%
+  select(lifeExp:gdpPercap) %>%
+  pivot_longer(cols=everything())%>%
+  ggplot(aes(name, value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free") + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(title = "Distributions of the key variables", 
+       x  = "", 
+       y="Value")
+```
+A closer look at these outliers reveals that Asia and Europe account for the large majority of population and GDP per capita outliers, followed at a clear distance by the Americas and Africa. Oceania, consisting of only two countries, Australia and New Zealand, registers the least number of outliers. In Europe, GDP outliers are fairly evenly distributed among a large number of countries. In the Americas, the USA and Canada account for all GDP outliers. For Asia, the majority of GDP outliers come from Kuwait (twelve), Saudi Arabia and Japan (five each) as well as Singapore and Hong Kong, China (four each). In Oceania, Australia accounts for five out of seven GDP outliers. 
+
+```{r outlierFuncAppliedOutHidden, include = FALSE}
+#Determine outliers for each variable
+gapminderOutliers <- cbind(gapminder[c("continent", "country", "year")], outlierFunc(gapminder[c("lifeExp", "pop", "gdpPercap")]))
+```
+
+```{r outlierTable}
+#Outlier totals by continent, no outlier_lifeExp since no outliers
+gapminderOutliers %>% 
+  select(continent, outlier_pop,outlier_gdpPercap) %>%
+  group_by(continent) %>% 
+  summarize_all(sum) %>% 
+  kable(caption = "Population and GDP per capita outliers by continent") %>% 
+  kable_styling(position = "center")
+```
+
+```{r outlierTotals, include=FALSE}
+#Outlier totals, by continents and countries
+gapminderOutliers %>% 
+  select(continent, country, outlier_pop, outlier_gdpPercap) %>%
+  group_by(continent, country) %>% 
+  summarize_all(sum) %>% 
+  filter(outlier_pop > 0 | outlier_gdpPercap > 0)
+```
+
+As shown below, excluding outliers, the distributions of GDP per capita and population have a strong negative skew, while life expectancy has a clear right skew and is bimodal. The latter suggests that, in general, populations are very likely to reach a mean life expectancy greater 40, but that some countries struggle to improve life expectancy towards the 70s while others do not. This bimodale distribution may thus be interpreted as reflecting a rift in life expectancy between poorer and richer countries, the latter being better able to improve life expectancy than the former. A closer look at the data (below) shows that this is only partially the case, however.
+
+```{r histograms, fig.width = 6}
+gapminderOutliers %>% 
+  select(lifeExp:gdpPercap) %>% 
+  mutate(
+    pop = if_else(pop>44772558 + 16791558*1.5, NA_integer_, pop),
+    gdpPercap = if_else(gdpPercap>8123.402 + 21510.565*1.5, NA_real_, gdpPercap), 
+    gdpPercapThousands = gdpPercap/1000,
+    gdpPercap = NULL) %>%
+  pivot_longer(cols=everything()) %>%
+  ggplot(aes(value)) + 
+  geom_histogram(position = "identity", alpha = .3) + 
+  facet_wrap(~name, scales = "free") + 
+  labs(title = "Variable distributions", 
+       x = "Value", 
+       y = "Frequency (absolute)")
+```
+
+
+## Development of variables across time
+
+A look at the data across time and by continents reveals interesting trends. A look at GDP per capita in absolute terms shows that, between 1952 and 2007, Europe has shown some of the largest gains, increasing more than fourfold from 5600 to 25000 US Dollars. An important part of these gains may of course be attributed to the post-World War II recovery, which was gaining momentum during the 1950s. Europe's absolute GDP values are only beat by Oceania, which, starting from a 10 thousand Dollar per capita GDP, grew to almost 30 thousand by 2007. Following these two top regions, the Americas and Asia have gone through a rather similar development, commencing at a four and five thousand Dollar GDP per capita in 1952 and growing to 11 and 12 thousand Dollar per capita respectively. By far the lowest per capita GDP is found in Africa, where it has less than tripled from 1300 to 3100 Dollars over some five decades. Said differently, in 2007 Africa is still far from reaching the 1952 per capita GDP of any other continents. Historically, the reason for this development may at least partially be explained by the continent's relatively late independence compared to that of Latin America and the much more socially and politically invasive form of colonialism there when compared to Asia. 
+
+```{r varsAcrossTime, fig.height = 7.5, fig.width= 9.5}
+
+df1 <- gapminder %>% 
+  pivot_longer(cols = c("lifeExp", "pop", "gdpPercap"), 
+               names_to = "vars", 
+               values_to = "vals") %>% 
+  group_by(continent, year, vars) %>% 
+  mutate(mean = mean(vals), 
+         sd = sd(vals), 
+         ymin = if_else(vars == "pop", mean, mean - sd/2), # For sd/2 explanation, see footnote in text
+         ymax = if_else(vars == "pop", mean, mean + sd/2)) 
+
+p <- ggplot(df1, aes(year, mean, colour = continent)) + 
+  geom_point() + 
+  geom_line() +
+  geom_errorbar(aes(ymin=ymin, ymax=ymax), width = 1) + 
+  facet_wrap(~vars, scales="free") + 
+  theme(legend.position = "bottom") + 
+  labs(x = "Year", 
+       y = "Mean and standard deviation (1 sd)")
+
+p1 <- p %+% subset(df1, vars %in% c("gdpPercap", "lifeExp")) + 
+  theme(legend.position="none")
+p2 <- p %+% subset(df1, vars == "pop") + 
+  labs(colour = "Continent")
+
+grid.arrange(grobs = lapply(
+  list(p1, p2),
+  set_panel_size,
+  width = unit(8, "cm"),
+  height = unit(6, "cm")), 
+  top = "Evolution of variables across time") 
+
+```
+
+In addition to the development of the mean values, it is also notable that the standard deviation^[Please note: In the graphic, the error bars show only one standard deviation, which is centered on the mean, to avoid cluttering the image with error bar overlaps.] - the spread of GDP per capita among countries of the same continent - has increased massively everywhere except in Asia, where it has fallen. The latter indicates a desirable combination of economic growth and convergence. Standard deviation has more than tripled in all other regions except Oceania, where it has increased almost eighteen fold. In other words, in all regions except Asia was economic growth accompanied by economic divergence, with some countries pulling ahead while others were falling behind. 
+
+Concerning the key indicator of life expectancy, the development has been somewhat similar. Oceania, starting with the higest life expectancy of 69 years in 1952, reached 81 years in 2007. Europe, starting at 64 years, reached 78 years. In the Americas and Asia, average life expectancy increased from 53 and 46 years to 74 and 71 years. Africa, once again far behind, commenced at 39 years and only reached 55 years in 2007. By far the largest gains were made in Asia and the Americas, where life expectancy has increased by 26 and 21 years respectively. Regarding the spread, the standard deviation has fallen by more than half in Europe and the Americas, to 3 and 4.4 points respectively, a very positive development given mean life expectancy increases. In Asia, the standard deviation has only fallen by 1.3 points to 8. In Oceania, standard deviation has only increased slightly in absolute terms, increasing by 0.5 points to 0.72. In Africa, the life expectancy's standard deviation has unfortunately almost doubled to 9.6 points. On the one hand, given the continent's historic point of departure in 1952, this means that some countries were able to significantly improve life expectancy while, on the other hand, some countries were only able to do so to a much more limited extent, if at all. 
+
+As can be seen in the population graph above, population growth has been massive in Asia and notable in the Americas and Africa in absolute terms, while it has been much smaller in Oceania and near horizontal in Europe. The graph below shows population growth in percentages. While population growth rates have declined across the board, none are negative. As of 2007, by far the largest population growth rates are registered in Africa and by far the lowest in Europe. The large increase in absolute population numbers in Asia is thus owed not so much to an exceptionally high growth rate as it is to the exceptional size of the population itself.
+
+```{r dataFilerForTextDisc, include=FALSE}
+#Code to filter data down to relevant years for text discussion, var selected in last filter()
+gapminder %>% 
+  pivot_longer(cols = c("lifeExp", "pop", "gdpPercap"), 
+               names_to = "vars", 
+               values_to = "vals") %>% 
+  group_by(continent, year, vars) %>% 
+  mutate(mean = mean(vals), 
+         sd = sd(vals), 
+         ymin = if_else(vars == "pop", mean, mean - sd/2), 
+         ymax = if_else(vars == "pop", mean, mean + sd/2)) %>% 
+  ungroup()%>%
+  select(-country, -vals) %>%
+  filter(year %in% c(min(year), max(year)), 
+         vars =="lifeExp") %>%
+  unique() %>%
+  arrange(continent, vars, year)
+```
+    
+```{r popGrowthAccTime}
+gapminder %>% 
+  group_by(year, continent) %>% 
+  summarize(popSum = sum(pop)) %>% 
+  ungroup() %>% 
+  group_by(continent) %>% 
+  arrange(continent, year) %>% 
+  mutate( popChangePerc = (popSum-lag(popSum))/popSum*100) %>% 
+  ggplot(aes(year, popChangePerc, colour = continent)) + 
+  geom_line() + 
+  theme(legend.position = "right") + 
+  scale_y_continuous(breaks = 0 : 15) + 
+  xlim(1955, 2007) + 
+  labs(title = "Population growth rate changes across time", 
+       x="Year", 
+       y = "Population change (percentage)", 
+       colour = "Continent")
+```
+
+# Relationship between variables
+A brief visual examination shows that there is clearly a (GDP per capita log based) linear relationship between GDP per capita and life expectancy. As can be seen, the observations' deviation (unexplained variance) from the model decreases as GDP per capita increases. There are a number of Asian continent observations (to the right) which do not conform to this pattern, however.   
+
+```{r regLifeExpGDP}
+gapminder %>% 
+  ggplot(aes(gdpPercap, lifeExp)) + 
+  geom_point(aes(colour=continent), alpha = .3) + 
+  scale_x_log10() + 
+  geom_smooth(method ="lm", colour = "black") + 
+  labs(title = "Life expectancy as a function of\nGDP per capita", 
+       x = "GDP per capita", 
+       y = "Life expectancy (years)", 
+       colour = "Continent")
+```
+Similarly, the population log based scatterplot regression line has a positive slope, but the relationship between population and life expectancy is not really linear. This becomes evident by the distribution of the data, each country being plotted as a near vertical line, resulting in a very  wide spread around the linear regression line. Looking at the scatterplot for one year only seems to confirm this and is, moreover, accompanied by a large fall in the x coefficient. Based on these  plots, population is thus a likely candidate for exclusion from linear regression.
+
+
+```{r regPlotLifeExPop, fig.height=3, fig.width=5}
+gapminder2007 <- gapminder %>%
+  filter(year == max(gapminder$year)) %>% 
+  select(-year) 
+
+gapminder %>% 
+  mutate(faceting = ifelse(year==2007, "2007", "1955-2007")) %>% 
+  ggplot(aes(pop, lifeExp)) + 
+  geom_point(aes(colour=continent), alpha = .3) + 
+  scale_x_log10() + 
+  geom_smooth(method ="lm", colour = "black") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Life expectancy as a function of population",
+       x = "Population", y= "Life expectancy (years)", 
+       colour = "Continent") + 
+  facet_wrap(~faceting)
+
+```
+
+In order to explore the relationship between these variables, a regression analysis, with two log based independent variables and continent as control variable, was conducted. The results show that, for every one percent increase in GDP per capita and population, life expectancy increases by `r round(15.1664/100, 2)` years and `r round(1.9937/100, 2)` years respectively. Both variables are highly significant^[Please note that significance is reported, but model assumptions were not tested here, since the main purpose is not to provide a statistical model, but to answer the aforementioned questions. See other projects for more detailed analyses.]. Moreover, the dummy variables indicate that there is a significant difference between Europe and all other continents except Oceania, the most extreme case being Africa. In comparison to Europe, the effect of GDP per capita and population increases on life expectancy are more than halved. The model is also highly significant and, with an adjusted R-squared of 0.71, is capable of explaining 71 percent of variance in the dependent variable.   
+
+```{r regFull}
+gap_reg <- gapminder %>% 
+  mutate(continent = fct_relevel(continent, "Europe"))
+summary(lm(lifeExp ~ log10(gdpPercap) + log10(pop) + continent, gap_reg))
+```
+Conducting the same regression for 2007 only, some important changes emerge. The model is still highly significant, adjusted R-squared increases by more than 4 percent, the GDP per capita coefficient drops by almost a third, the population coefficient falls to below 0.1 and the differences between Europe and other continents except Africa shrink, the difference to the Americas and Oceania actually becoming slightly positive. Only the difference to Africa remains statistically significant and the coefficient indicating the average difference in life expectancy between the two has actually increased still further, by approximately 2.5 points. While it should be kept in mind that only data for one year, 2007, was included, it does show that the relationships between these variables are not constant across time.   
+
+```{r reg2007}
+gap_reg07 <- gap_reg %>% 
+  filter(year == 2007)
+summary(lm(lifeExp ~ log10(gdpPercap) + log10(pop) + continent, gap_reg07))
+```
+# Identifying candidate countries
+Having analyzed the different variables and their relationships to each other, this section will attempt to develop a method to identify a small subset of countries which should receive humanitarian aid. This requires narrowing the focus to the most recent time period.
+
+```{r basicStatsHidden, include = FALSE}
+#Applying outlier function
+gapminder2007 <- cbind(gapminder2007[c("continent", "country")], outlierFunc(gapminder2007[c("lifeExp", "pop", "gdpPercap")]))
+
+# Var 2007 basic stats, not shown in output
+gapminder2007 %>% 
+  select(lifeExp, pop, gdpPercap) %>% 
+  pivot_longer(cols = everything(), 
+               names_to="vars", 
+               values_to="values") %>% 
+  group_by(vars)%>% 
+  summarize(min = min(values),
+            median = median(values),
+            max = max(values),
+            range = max-min,
+            median = median(values),
+            mean = mean(values),
+            sd = sd(values)) %>%
+  pivot_longer(cols = -vars, 
+               names_to = "statistics")%>%
+  pivot_wider(names_from = vars, 
+              values_from = value)%>%
+  select(1,4,2,3) %>% 
+  mutate_if(is.numeric, round)
+
+gapminder2007%>%
+  group_by(continent)%>%
+  summarize(mean(lifeExp), sd(lifeExp))
+```
+Since aid should clearly be targeted at the group of countries with lowest life expectancy, in a first step such a subset will be selected. As can be seen in the following graphic, mean life expectancy in 2007 differed vastly especially between Africa and the other continents. In Africa, life expectancy has a mean of 54.8 years and a standard deviation of 9.6, whereas in Asia, the closest to Africa, the average is 70.7 years, with a standard deviation of 8. This makes it likely that most of the countries with the most pressing need for humanitarian aid will be located in Africa.
+
+```{r lifeExpMeanAndErrorBarByCont}
+gapminder2007 %>% 
+  group_by(continent) %>% 
+  mutate(meanLife = mean(lifeExp), sdLife = sd(lifeExp)) %>%
+  ggplot(aes(fct_reorder(continent, meanLife), meanLife)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=meanLife-sdLife, ymax=meanLife+sdLife), width = 0.2) +
+  labs(title = "Mean life expectancy and standard deviation", 
+       x = "Continent", 
+       y="Life expectancy (years)")
+
+```
+
+One way to select countries in greatest need may be to check for negative outliers. As can be seen below, even when the data is narrowed to only the year 2007, no variable has any negative outliers, so that the lowest life expectancy countries will be selected by simply sorting the data and selecting the 25 countries with the lowest life expectancy in 2007^[Splitting the data by continent also produced no outliers.].  
+
+```{r basicVarsBoxplot2007, fig.width = 6}
+gapminder2007 %>% 
+  select(lifeExp:gdpPercap) %>% 
+  pivot_longer(cols=everything()) %>%
+  ggplot(aes(name, value)) + 
+  geom_boxplot(alpha=.1) + 
+  labs(title = "Distributions of the key variables", 
+       x  = "", 
+       y="Value") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  facet_wrap(~name, scales = "free") 
+
+```
+Of the 25 countries with the lowest life expectancy, 24 are African and only one, Afghanistan, is Asian^[Among the 50 countries with the lowest life expectancy, 42 are African, seven Asian and one American.]. These 25 countries will constitute the subset from which the final recipients for humanitarian aid will be selected. In order to be able to evaluate recent changes, the time period under observation below will be extended from 1992 to 2007. 
+
+```{r bottomLifeExpCountries_hidden, include=FALSE}
+#Bottom 50 and 25 life expectancy countries by continent
+gapminder2007 %>% 
+  arrange(lifeExp) %>% 
+  slice(0:50)%>% 
+  group_by(continent) %>% 
+  summarise(n())
+
+gapminder2007 %>% 
+  arrange(lifeExp) %>% 
+  slice(0:25) %>% 
+  group_by(continent) %>% 
+  summarise(n()) 
+
+#Create dataset with worst 25 life exp countries
+selecWorst25 <- gapminder2007 %>% 
+  arrange(lifeExp) %>% 
+  slice(0:25) %>% 
+  pull(country) %>% 
+  as.character()
+
+worst25lastDecades <- gapminder %>% 
+  filter(country %in% selecWorst25, 
+         year %in% c(1992, 1997, 2002, 2007)) %>% 
+  droplevels()
+```
+
+```{r worst25gdpLifeScattererplot}
+ggplot(worst25lastDecades, aes(log10(gdpPercap), lifeExp)) + 
+  geom_point() + 
+  geom_smooth(method=lm) +
+  labs(title="Life expectancy as a function of GDP per\ncapita for lowest life expectancy countries", 
+       x = "GDP per capita", 
+       y = "Life expectancy (years")
+``` 
+
+Given the difference between European and African countries and between the data concerning the entire period and 2007 only, another regression of the new subset may be in order. The regression^[Population was not significant and was removed from the model.] shows that the effect of GDP per capita is statistically significant and, as expected, quite low, a 1 percent increase thereof increasing life expectancy by only `r round(5.941/100, 2)` years or `r round((5.941/100)*365)` days. While the model is also highly significant, the most important change that has taken place is a massive drop in adjusted R-squared. The model now only explains 15.1 percent of the variance in life expectancy. Said another way, within the subset of countries with the lowest life expectancy, factors other than GDP per capita play a crucial role in determining life expectancy. 
+
+```{r worst25gdpLifeRegression}
+summary(lm(lifeExp ~ log10(gdpPercap), worst25lastDecades))
+``` 
+In spite of this finding, it may nonetheless be feasible to develop an additional method for selecting aid recipient countries. Accordingly, the subset with the lowest life expectancy will be further reduced by excluding countries where both GDP per capita and life expectancy are increasing and where GDP per capita is increasing and life expectancy is decreasing. In the former case, positive developments suggest the capacity for improvement without external help. In the latter case, governments do not seem to be translating tax gains (generated by per capita GDP increases) into welfare gains and should thus not be entrusted or indirectly rewarded with humanitarian aid. This leaves two types of countries, namely where GDP per capita has been decreasing and this decrease has been accompanied either by increases or decreases in life expectancy^[As becomes evident from this, correlation is of little use in this scenario, since both concomitant increases or concomitant decreases return a positive correlation and contrary developments always return negative correlations.]. The problem with this approach is that GDP per capita and life expectancy are unlikely to always only be increasing or only be decreasing across time, making it necessary to score countries. Accordingly, given that there is a positive correlation between GDP per capita and life expectancy, year based country observations with growing per capita GDPs are not considered in need of aid, since life expectancy is expected to increase even without it, and thus score 0. Countries where life expectancy increases while GDP per capita decreases score 0.5, since a drop in life expectancy is to be expected. Lastly, countries where both variables are in decline score a 1. Comparing year to year changes for each country, three observations can be made for each country for the years 1997, 2002 and 2007 and the average neediness score be calculated.
+
+```{r reducedSubsetTopNeediness, include=FALSE}
+#Lagging vars and calc year to year diffs
+diffsWorst25 <- worst25lastDecades %>% group_by(country)%>% arrange(country, year) %>% mutate(diffLifeExp = lifeExp - lag(lifeExp), diffGdpPercap = gdpPercap - lag(gdpPercap))
+
+#Scoring countries by neediness
+needinessByYear <- diffsWorst25 %>% select(country, year, diffLifeExp, diffGdpPercap) %>% 
+  mutate(gdpDown = ifelse(diffGdpPercap < 0, T, F),
+         lifeExpUp = ifelse(diffLifeExp > 0, T, F),
+         neediness = case_when(
+           gdpDown == FALSE ~ 0, #Eco growth disqualifies
+           gdpDown == TRUE & lifeExpUp == TRUE ~ .5, # eco shrinkage and increase in lifeExp, help not needed yet, but commendable (incentives)  
+           gdpDown == TRUE & lifeExpUp == FALSE ~ 1)) # eco shrinkage and decrease in lifeExp
+
+needinessByYear %>% 
+  group_by(country, neediness) %>% 
+  summarize(count = n()) %>% 
+  ungroup() %>% 
+  filter(!is.na(neediness)) %>% 
+  arrange(neediness, desc(count))
+
+needinessByYear %>% 
+  group_by(country, neediness) %>% 
+  summarize(count = n()) %>% 
+  ungroup()%>% 
+  filter(!is.na(neediness)) %>% 
+  group_by(neediness, count) %>% 
+  summarize(nCountries = n()) %>% 
+  arrange(neediness, desc(count))
+
+countryZeroNeedy <- needinessByYear %>% 
+  group_by(country, neediness) %>% 
+  summarize(count = n()) %>% 
+  ungroup()%>% filter(!is.na(neediness)) %>% 
+  arrange(desc(count), neediness) %>% 
+  slice(1:8) %>% 
+  pull(country) %>% 
+  as.character()
+
+countryZeroNeedyTwice <- needinessByYear %>% 
+  group_by(country, neediness) %>% 
+  summarize(count = n()) %>% 
+  ungroup() %>% 
+  filter(!is.na(neediness)) %>% 
+  filter(neediness == 0.0 & count == 2) %>% 
+  pull(country) %>% 
+  as.character()
+
+needinessScoreTop <- needinessByYear %>%
+  group_by(country) %>%
+  summarize(avgNeediness = sum(neediness, na.rm=TRUE)/3) %>%
+  select(country, avgNeediness) %>%
+  arrange(desc(avgNeediness)) %>% slice(0:6) 
+
+mostNeedyCountrySelec <- needinessScoreTop %>% 
+  pull(country) %>% 
+  as.character()
+```
+
+Based on this approach, there are eight countries which score zero on neediness^[These are `r countryZeroNeedy`.], followed by 11 countries which score zero in two out of three years^[These are `r countryZeroNeedyTwice`.]. This leaves six countries, which are the most needy. Of these, the Central African Republic is the most needy, with a neediness score of 0.83, followed by Burundi, the Democratic Republic of Congo, Cote d'Ivoire, Liberia and Zimbabwe, each with a score of 0.5.
+
+```{r reducedSubsetTopNeedinessTable}
+needinessScoreTop %>%
+  kable(caption = "Countries with top neediness scores") %>%
+  kable_styling(position = "center")
+```
+
+The graphic below shows the life expectancy of the subset of 25 countries, the green points marking the life expectancy of the countries selected from among these through this method. It becomes clear that the neediest countries are not the ones with the lowest life expectancy, although they also do not tend to be among the countries with the highest life expectancy. 
+ 
+```{r finalSelecAmongWorst25Plot, fig.width = 6, fig.height = 4}
+worst25lastDecades %>% mutate(
+  countryNeed = ifelse(country %in% mostNeedyCountrySelec, "Yes", "No"), 
+  countryNeed = ordered(as_factor(countryNeed), levels = c("Yes", "No"))
+  )%>%
+  ggplot(aes(country, lifeExp, colour = countryNeed)) + 
+  geom_point(size=2) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  scale_colour_manual('Selected', 
+                      values=c('green', 'red')) + 
+  labs(title = "Selected subset of countries among the 25 countries\nwith lowest life expectancy", 
+       x = "", y = "Life expectancy (years)") +
+  facet_grid(~year)
+```
+A look at the five countries with lowest average life expectancy across the observed period explains why this is so. In all these countries except Zambia, both GDP per capita and life expectancy are on the increase, all life expectancy values in 2007 lying around 42 years of age, except in Rwanda, where it reaches 45 years of age.  
+
+```{r bottom5LifeGDPExpPlots, fig.height = 6, fig.width = 8}
+bottom5 <- worst25lastDecades %>% 
+  group_by(country) %>% 
+  summarize(avgLifeExp = mean(lifeExp)) %>% 
+  slice_min(avgLifeExp, n = 5) %>% pull(country) %>% 
+  as.character()
+
+worst25lastDecades %>% 
+  filter(country %in% bottom5) %>% 
+  select(country, year, gdpPercap, lifeExp) %>% 
+  pivot_longer(c(gdpPercap, lifeExp), 
+               names_to="vars", 
+               values_to="vals") %>%
+  ggplot(aes(year, vals)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(title = "Countries with the lowest life expectancy (1992-2007)", 
+       x = "Year", 
+       y = "Values") + 
+  facet_rep_wrap(country~vars, scales ="free") 
+```
+This can be compared to the countries selected through the new method, shown below. Here, GDP per capita has generally been in steep decline. Given the positive correlation between GDP per capita and life expectancy, one would thus expect declines in life expectancy as well. GDP per capita declines have, however, been accompanied by noticeable drops in life expectancy only in three and by substantial increases in life expectancy in another three countries, namely Burundi, Liberia and the Democratic Republic of Congo^[In this particular case, these "gains" represent largely the recovery from a massive drop in life expectancy in 1997.]. Life expectancy for all these countries lies between 40 and 50 years of age, the majority lying near 45 years of age. The implications of these findings are discussed in the conclusion.
+
+```{r mostNeedyLifeGDPExpPlots, fig.height = 6, fig.width = 8}
+worst25lastDecades %>% 
+  filter(country %in% mostNeedyCountrySelec) %>% 
+  select(country, year, gdpPercap, lifeExp) %>% 
+  pivot_longer(c(gdpPercap, lifeExp), 
+               names_to="vars", 
+               values_to="vals") %>%
+  ggplot(aes(year, vals)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(title = "Selected recipient countries  (1992-2007)", 
+       x = "Year", 
+       y = "Values") + 
+  facet_rep_wrap(country~vars, scales ="free")
+
+```
+
+# Conclusion
+This analysis has set out to determine which continents and countries are in greatest need of humanitarian aid and to explore alternative approaches to selecting future aid recipient countries. Concerning the first topic, the answer is clear. The African continent has not only the lowest average life expectancy, but also the greatest spread among life expectancy values. Moreover, gains in life expectancy have not permitted the African continent to converge with the rest of the world. As of 2007, Africa was still below the 1952 level of life expectancy of all other continents. 
+
+Answering the above question is much easier than developing an alternative approach to selecting future aid recipient countries, given the fundamentally ethical nature of the question as well as the limited explanatory power of GDP per capita. In order to direct humanitarian aid at those most in need, the 25 countries with the lowest life expectancy as of 2007 were selected. Within this subset, based on the positive correlation between GDP per capita and life expectancy, countries in which GDP per capita has been increasing and life expectancy has been increasing or decreasing were excluded from this subset. The former was excluded because conditions are already improving without help, the latter because the respective governments seem to have no interest in translating economic into welfare gains for their populations, circumstances which humanitarian aid is likely to sustain rather than change. Aid should thus be focused on countries were GDP is declining, since this is likely to be accompanied by a decline in life expectancy. Accordingly, a county's neediness over the last 15 years was determined based on whether countries experienced a combination of economic and life expectancy decline (scoring one point for a given year) or a combination of economic decline and life expectancy increases (scoring 0.5 points, or 0 otherwise). Six aid recipient countries were identified by applying this method.
+
+As shown above, however, this method is flawed primarily for two reasons. Firstly, the need of a country for aid was fundamentally determined through changes in GDP per capita, but within the subset of the lowest GDP per capita countries this variable's effect is actually lower than in the rest of the countries. Worse still, other factors which have not been taken into consideration determine the lion share of variance in life expectancy (as indicated by the massive drop in R-squared mentioned above). Some of this unexplained variance is likely to explain why, out of the six countries finally selected by this alternative method, three actually showed falling per capita GDP and growing life expectancy across time. Moreover, the other three countries registered drops in per capita GDP until 2007, but unexpected life expectancy increases in 2007. For these three countries, the explanation may be found in one key variable not included in the model, namely the absence or presence of intra- and inter-state violence. Last but not least, it was shown that the countries which were selected by the alternative method clearly had higher life expectancy values than the worst five countries in the data set. Future research, based on more variables suitable especially to the African context, is thus needed to find out the determinants of life expectancy and to perhaps develop, based on these findings, an new method for selecting aid recipient countries. 
