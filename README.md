@@ -1,6 +1,6 @@
 # Gapminder dataset analysis and report
 
-Please see the finished report [here](https://spaniel01.github.io/gapminder_analysis_report/) The report was generated from the gapminderDataAnalysis.Rmd file.
+Please see the finished report **[here](https://spaniel01.github.io/gapminder_analysis_report/)**. The report was generated from the gapminderDataAnalysis.Rmd file.
 
 Using the gapminder dataset, made available through the gapminder R package, available [here](https://www.rdocumentation.org/packages/gapminder/versions/0.3.0) and drawn from World Bank data, an explanatory data analysis is conducted (including multiple regression) and various plots (scatter, col, mean and error bar etc.) are generated. The findings are interpreted. 
 
