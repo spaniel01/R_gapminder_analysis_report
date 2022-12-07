@@ -1,6 +1,6 @@
 # Gapminder dataset analysis and report
 
-Please see the finished report **[here](https://spaniel01.github.io/R_gapminder_analysis_report/)**. The report was generated from the gapminderDataAnalysis.Rmd file.
+**[View analysis!](https://spaniel01.github.io/R_gapminder_analysis_report/)**. The report was generated from the gapminderDataAnalysis.Rmd file.
 
 To view the **code**, go into the docs folder and the .rmd file!
 
